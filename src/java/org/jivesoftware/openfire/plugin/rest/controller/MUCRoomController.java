@@ -1,22 +1,17 @@
 package org.jivesoftware.openfire.plugin.rest.controller;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Date;
-import java.util.List;
-import java.util.Iterator;
+import java.util.*;
 
 import javax.ws.rs.core.Response;
 
+import org.jivesoftware.openfire.SessionManager;
 import org.jivesoftware.openfire.XMPPServer;
 import org.jivesoftware.openfire.cluster.ClusterManager;
 import org.jivesoftware.openfire.container.PluginManager;
-import org.jivesoftware.openfire.group.ConcurrentGroupList;
-import org.jivesoftware.openfire.group.Group;
+import org.jivesoftware.openfire.group.*;
 import org.jivesoftware.openfire.muc.*;
 import org.jivesoftware.openfire.muc.cluster.RoomUpdatedEvent;
 import org.jivesoftware.openfire.muc.cluster.RoomRemovedEvent;
-import org.jivesoftware.openfire.muc.cluster.RoomAvailableEvent;
 import org.jivesoftware.openfire.muc.spi.LocalMUCRoom;
 import org.jivesoftware.openfire.plugin.rest.RESTServicePlugin;
 import org.jivesoftware.openfire.plugin.rest.entity.*;
@@ -24,16 +19,16 @@ import org.jivesoftware.openfire.plugin.rest.exceptions.ExceptionType;
 import org.jivesoftware.openfire.plugin.rest.exceptions.ServiceException;
 import org.jivesoftware.openfire.plugin.rest.utils.MUCRoomUtils;
 import org.jivesoftware.openfire.plugin.rest.utils.UserUtils;
+import org.jivesoftware.openfire.roster.RosterManager;
 import org.jivesoftware.util.AlreadyExistsException;
 import org.jivesoftware.util.cache.CacheFactory;
-import org.xmpp.packet.JID;
-import org.xmpp.packet.Presence;
+import org.xmpp.packet.*;
 
-import org.xmpp.packet.Message;
 import org.dom4j.Element;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /**
  * The Class MUCRoomController.
@@ -135,6 +130,16 @@ public class MUCRoomController {
                 .getChatRoom(roomName.toLowerCase());
 
         if (chatRoom != null) {
+
+            //collect all room roles
+            Collection<JID> rosterJids = new ArrayList<JID>();
+            rosterJids.addAll(chatRoom.getOwners());
+            rosterJids.addAll(chatRoom.getAdmins());
+            rosterJids.addAll(chatRoom.getMembers());
+            rosterJids.addAll(chatRoom.getOutcasts());
+
+            pushRosterIQ(rosterJids);
+
             chatRoom.destroyRoom(null, null);
             if (ClusterManager.isClusteringStarted()) {
                 CacheFactory.doClusterTask(new RoomRemovedEvent((LocalMUCRoom) chatRoom));
@@ -531,6 +536,13 @@ public class MUCRoomController {
         // Don't delete the same owners
         owners.removeAll(existingOwners);
 
+        //collect all roles before update
+        Collection<JID> rosterJids = new ArrayList<JID>();
+        rosterJids.addAll(room.getOwners());
+        rosterJids.addAll(room.getAdmins());
+        rosterJids.addAll(room.getMembers());
+        rosterJids.addAll(room.getOutcasts());
+
         // Collect all roles to reset
         roles.addAll(owners);
         roles.addAll(room.getAdmins());
@@ -557,6 +569,72 @@ public class MUCRoomController {
         if (mucRoomEntity.getOutcasts() != null) {
             for (String outcastJid : mucRoomEntity.getOutcasts()) {
                 room.addOutcast(UserUtils.checkAndGetJID(outcastJid), null, room.getRole());
+            }
+        }
+
+        //collect all roles after update
+        rosterJids.addAll(room.getOwners());
+        rosterJids.addAll(room.getAdmins());
+        rosterJids.addAll(room.getMembers());
+        rosterJids.addAll(room.getOutcasts());
+
+        pushRosterIQ(rosterJids);
+    }
+
+    private void pushRosterIQ(Collection<JID> rosterJids){
+
+        Collection<JID> rosterUsers = new ArrayList<JID>();
+
+        //remove duplicates
+        ArrayList<JID> uniqueRosterJids = new ArrayList<>(new HashSet<>(rosterJids));
+
+        //extract users from groups
+        for (JID jid : uniqueRosterJids) {
+
+            Group g = null;
+            try {
+                g = GroupManager.getInstance().getGroup(jid);
+            }
+            catch(GroupNotFoundException e) {
+                //do nothing
+            }
+
+            //user group
+            if (g != null){
+                for (JID groupJid : g.getMembers()) {
+                    if (!rosterUsers.contains(groupJid)) {
+                        rosterUsers.add(groupJid);
+                    }
+                }
+            }
+            //user
+            else{
+                if (!rosterUsers.contains(jid)) {
+                    rosterUsers.add(jid);
+                }
+            }
+        }
+
+        //push roster iqs
+        JID from = XMPPServer.getInstance().createJID("master", null);
+        for (JID rosterUserJid : rosterUsers) {
+
+            try {
+                Roster roster = new Roster();
+                roster.setType(IQ.Type.set);
+                roster.addItem(from, Roster.Subscription.remove);
+                roster.setTo(rosterUserJid);
+                if (RosterManager.isRosterVersioningEnabled()) {
+                    roster.getChildElement().addAttribute("ver", String.valueOf(roster.hashCode()));
+                }
+
+                log("Send roster IQ to: " + rosterUserJid.toString() + " (" + rosterUserJid.getNode() + ")");
+                log("Send roster response: " + roster.toString());
+
+                SessionManager.getInstance().userBroadcast(rosterUserJid.getNode(), roster);
+            }
+            catch(Exception e){
+                log(e.toString());
             }
         }
     }
