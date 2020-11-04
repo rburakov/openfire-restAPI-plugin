@@ -4,7 +4,6 @@ import java.util.*;
 
 import javax.ws.rs.core.Response;
 
-import org.jivesoftware.openfire.SessionManager;
 import org.jivesoftware.openfire.XMPPServer;
 import org.jivesoftware.openfire.cluster.ClusterManager;
 import org.jivesoftware.openfire.container.PluginManager;
@@ -19,7 +18,6 @@ import org.jivesoftware.openfire.plugin.rest.exceptions.ExceptionType;
 import org.jivesoftware.openfire.plugin.rest.exceptions.ServiceException;
 import org.jivesoftware.openfire.plugin.rest.utils.MUCRoomUtils;
 import org.jivesoftware.openfire.plugin.rest.utils.UserUtils;
-import org.jivesoftware.openfire.roster.RosterManager;
 import org.jivesoftware.util.AlreadyExistsException;
 import org.jivesoftware.util.cache.CacheFactory;
 import org.xmpp.packet.*;
@@ -138,7 +136,7 @@ public class MUCRoomController {
             rosterJids.addAll(chatRoom.getMembers());
             rosterJids.addAll(chatRoom.getOutcasts());
 
-            pushRosterIQ(rosterJids);
+            dispatchRosterEvent(rosterJids);
 
             chatRoom.destroyRoom(null, null);
             if (ClusterManager.isClusteringStarted()) {
@@ -578,12 +576,11 @@ public class MUCRoomController {
         rosterJids.addAll(room.getMembers());
         rosterJids.addAll(room.getOutcasts());
 
-        pushRosterIQ(rosterJids);
+        dispatchRosterEvent(rosterJids);
     }
 
-    private void pushRosterIQ(Collection<JID> rosterJids){
-
-        Collection<JID> rosterUsers = new ArrayList<JID>();
+    private void dispatchRosterEvent(Collection<JID> rosterJids){
+        ArrayList<JID> rosterUsers = new ArrayList<>();
 
         //remove duplicates
         ArrayList<JID> uniqueRosterJids = new ArrayList<>(new HashSet<>(rosterJids));
@@ -615,28 +612,7 @@ public class MUCRoomController {
             }
         }
 
-        //push roster iqs
-        JID from = XMPPServer.getInstance().createJID("master", null);
-        for (JID rosterUserJid : rosterUsers) {
-
-            try {
-                Roster roster = new Roster();
-                roster.setType(IQ.Type.set);
-                roster.addItem(from, Roster.Subscription.remove);
-                roster.setTo(rosterUserJid);
-                if (RosterManager.isRosterVersioningEnabled()) {
-                    roster.getChildElement().addAttribute("ver", String.valueOf(roster.hashCode()));
-                }
-
-                log("Send roster IQ to: " + rosterUserJid.toString() + " (" + rosterUserJid.getNode() + ")");
-                log("Send roster response: " + roster.toString());
-
-                SessionManager.getInstance().userBroadcast(rosterUserJid.getNode(), roster);
-            }
-            catch(Exception e){
-                log(e.toString());
-            }
-        }
+        UserServiceController.pushRosterIQ(rosterUsers);
     }
     
     /**

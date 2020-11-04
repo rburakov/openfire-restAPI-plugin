@@ -1,8 +1,6 @@
 package org.jivesoftware.openfire.plugin.rest.controller;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
+import java.util.*;
 
 import javax.ws.rs.core.Response;
 
@@ -34,6 +32,7 @@ import org.jivesoftware.openfire.user.User;
 import org.jivesoftware.openfire.user.UserAlreadyExistsException;
 import org.jivesoftware.openfire.user.UserManager;
 import org.jivesoftware.openfire.user.UserNotFoundException;
+import org.xmpp.packet.IQ;
 import org.xmpp.packet.JID;
 import org.xmpp.packet.StreamError;
 
@@ -152,6 +151,45 @@ public class UserServiceController {
             }
 
             addProperties(username, userEntity.getProperties());
+
+            dispatchRosterEvent(user);
+        }
+    }
+
+    private void dispatchRosterEvent(User user){
+        ArrayList<JID> groupUsers = new ArrayList<>();
+        Collection<Group> groups = rosterManager.getSharedGroups(user.getUsername());
+        for (Group group : groups) {
+            groupUsers.addAll(group.getAdmins());
+            groupUsers.addAll(group.getMembers());
+        }
+        ArrayList<JID> uniqueGroupUsers = new ArrayList<>(new HashSet<>(groupUsers));
+
+        pushRosterIQ(uniqueGroupUsers);
+    }
+
+    //push roster subscription iq
+    public static void pushRosterIQ(ArrayList<JID> rosterUsers){
+        JID from = XMPPServer.getInstance().createJID("master", null);
+        for (JID rosterUserJid : rosterUsers) {
+
+            try {
+                org.xmpp.packet.Roster roster = new org.xmpp.packet.Roster();
+                roster.setType(IQ.Type.set);
+                roster.addItem(from, org.xmpp.packet.Roster.Subscription.remove);
+                roster.setTo(rosterUserJid);
+                if (RosterManager.isRosterVersioningEnabled()) {
+                    roster.getChildElement().addAttribute("ver", String.valueOf(roster.hashCode()));
+                }
+
+                log("Send roster IQ to: " + rosterUserJid.toString() + " (" + rosterUserJid.getNode() + ")");
+                log("Send roster response: " + roster.toString());
+
+                SessionManager.getInstance().userBroadcast(rosterUserJid.getNode(), roster);
+            }
+            catch(Exception e){
+                log(e.toString());
+            }
         }
     }
 
